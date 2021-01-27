@@ -52,6 +52,17 @@ typedef struct rz_sign_hash_t {
 	char *bbhash;
 } RzSignHash;
 
+typedef struct rz_sign_xref_info_t {
+	st64 offset;
+	ut64 size;
+	char *name;
+} RzSignXrefInfo;
+
+typedef struct rz_sign_inner_xref_t {
+	st64 src_offset;
+	st64 dst_offset;
+} RzSignInnerXref;
+
 typedef struct rz_sign_item_t {
 	char *name;
 	char *realname;
@@ -63,6 +74,7 @@ typedef struct rz_sign_item_t {
 	ut64 addr;
 	RzList *xrefs_from;
 	RzList *xrefs_to;
+	RzList *inner_refs;
 	RzList *vars;
 	RzList *types;
 	RzSignHash *hash;
@@ -143,7 +155,7 @@ RZ_API void rz_sign_item_free(RzSignItem *item);
 RZ_API void rz_sign_graph_free(RzSignGraph *graph);
 RZ_API void rz_sign_bytes_free(RzSignBytes *bytes);
 
-RZ_API RzList *rz_sign_fcn_xrefs_from(RzAnalysis *a, RzAnalysisFunction *fcn);
+RZ_API RzList *rz_sign_fcn_xrefs_from(RzAnalysis *a, RzAnalysisFunction *fcn, RzList **opt_irefs);
 RZ_API RzList *rz_sign_fcn_xrefs_to(RzAnalysis *a, RzAnalysisFunction *fcn);
 RZ_API RzList *rz_sign_fcn_vars(RzAnalysis *a, RzAnalysisFunction *fcn);
 RZ_API RzList *rz_sign_fcn_types(RzAnalysis *a, RzAnalysisFunction *fcn);

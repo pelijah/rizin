@@ -260,6 +260,8 @@ RZ_API void rz_flag_item_free(RzFlagItem *item) {
 	if (!item) {
 		return;
 	}
+	if (item->offset == 0x000685a0) 
+	    eprintf("Gotcha %s\n", "FUCK");
 	free(item->color);
 	free(item->comment);
 	free(item->alias);
@@ -703,6 +705,8 @@ RZ_API RzFlagItem *rz_flag_set_next(RzFlag *f, const char *name, ut64 off, ut32 
  * NULL is returned in case of any errors during the process. */
 RZ_API RzFlagItem *rz_flag_set(RzFlag *f, const char *name, ut64 off, ut32 size) {
 	rz_return_val_if_fail(f && name && *name, NULL);
+	if (off == 0x000685a0) 
+	    eprintf("Gotcha %s\n", name);
 
 	bool is_new = false;
 	char *itemname = filter_item_name(name);

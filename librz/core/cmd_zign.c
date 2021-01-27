@@ -8,6 +8,7 @@
 #include <rz_list.h>
 #include <rz_cons.h>
 #include <rz_util.h>
+#include <ht_pu.h>
 
 #include "core_private.h"
 
@@ -113,7 +114,7 @@ static void addFcnZign(RzCore *core, RzAnalysisFunction *fcn, const char *name) 
 			zignspace = rz_str_newlen(fcn->name, len);
 			rz_spaces_push(&core->analysis->zign_spaces, zignspace);
 		} else if (curspace) {
-			zigname = rz_str_newf("%s:", curspace->name);
+			//zigname = rz_str_newf("%s:", curspace->name); // WAT???
 		}
 		zigname = rz_str_appendf(zigname, "%s", fcn->name);
 	}
@@ -150,7 +151,6 @@ static void addFcnZign(RzCore *core, RzAnalysisFunction *fcn, const char *name) 
 	}
 	*/
 
-	rz_sign_item_free(it); // causes zigname to be free'd
 	if (zignspace) {
 		rz_spaces_pop(&core->analysis->zign_spaces);
 		free(zignspace);
@@ -579,6 +579,10 @@ struct ctxSearchCB {
 	bool rad;
 	int count;
 	const char *prefix;
+	HtPP *candidates;
+	HtPP *dependencies;
+	HtPU *matches;
+	HtUP *orphans;
 };
 
 static void apply_name(RzCore *core, RzAnalysisFunction *fcn, RzSignItem *it, bool rad) {
@@ -678,6 +682,180 @@ static int searchHitCB(RzSignItem *it, RzSearchKeyword *kw, ut64 addr, void *use
 		apply_types(ctx->core, fcn, it);
 	}
 	ctx->count++;
+	return 1;
+}
+
+static const char *clean_name(const char *name) {
+	if (!strncmp(name, "sym.imp.__imp_", 14)) {
+		return name + 14;
+	} else if (!strncmp(name, "sym.imp.", 8)) {
+		return name + 8;
+	} else if (!strncmp(name, "sym.", 4)) {
+		return name + 4;
+	}
+	return name;
+}
+
+#define DBG_ZIGN 1
+
+static bool check_match(RzSignItem *it, ut64 addr, struct ctxSearchCB *ctx, bool fill_deps) {
+	RzSignXrefInfo *r;
+	RzListIter *iter;
+	int resolved = 0;
+	RzVector *cand_vec = ht_pp_find(ctx->candidates, clean_name(it->name), NULL);
+	bool crit_failure = false;
+	rz_list_foreach (it->refs, iter, r) {
+		RzList *refs = rz_analysis_refs_get(ctx->core->analysis, addr + r->offset);
+		if (refs) {
+			RzAnalysisRef *ref = rz_list_first(refs);
+			if (DBG_ZIGN) {
+				char *flags = rz_flag_get_liststr (ctx->core->flags, ref->addr);
+				eprintf("Real ref from addr %08llx to: %s\n", addr + r->offset, flags);
+				eprintf("Sign ref from addr %08llx to: %s (size=%lld)\n", addr + r->offset, r->name, r->size);
+				free(flags);
+			}
+			RzFlagItem *fi = rz_flag_get_by_spaces(ctx->core->flags, ref->addr, RZ_FLAGS_FS_SYMBOLS, RZ_FLAGS_FS_FUNCTIONS, RZ_FLAGS_FS_IMPORTS, NULL);
+			if (fi) {
+				if (DBG_ZIGN) eprintf("Flag is %s from %s\n", fi->name, fi->space->name);
+				bool ok = false;
+				const char *pos = strstr(fi->name, ".dll_");
+				if (pos || !strcmp(fi->space->name, RZ_FLAGS_FS_IMPORTS)) {
+					pos = pos ? (pos + 5) : fi->name;
+					ok = !strcmp(pos, clean_name(r->name));
+					if (!ok) {
+						/* External xref mismatch. No need to go further. */
+						rz_list_free(refs);
+						return false;
+					}
+				} else {
+					bool found;
+					ut64 off = ht_pp_find(ctx->matches, clean_name(r->name), &found);
+					ok = found && off == ref->addr;
+				}
+				if (ok) {
+					if (DBG_ZIGN) eprintf("Ref is resolved!!!!!!!!!!!!!!\n");
+					resolved++;
+				} else {
+					if (DBG_ZIGN) eprintf("Ref is UNRESOLVED!!!!!!!!!!!!!!\n");
+					if (fill_deps && !cand_vec) {
+						/* No candidates yet so fill dependencies */
+						RzList *deps = ht_pp_find(ctx->dependencies, clean_name(r->name), NULL);
+						if (!deps) {
+							deps = rz_list_new();
+							ht_pp_insert(ctx->dependencies, clean_name(r->name), deps);
+						}
+						rz_list_append(deps, it);
+					}
+				}
+			} else {
+				eprintf("No flag for ref!!!!!!!!!\n");
+			}
+			if (rz_list_length(refs) > 1) {
+				eprintf("There is more refs\n");
+			}
+			rz_list_free(refs);
+		} else {
+			eprintf("No refs at addr %08llx\n", addr + r->offset);
+			return false;
+		}
+	}
+	/* Candidate has xrefs and they all were resolved */
+	if (resolved > 0 && resolved == rz_list_length(it->refs)) {
+		if (!ht_pu_insert(ctx->matches, clean_name(it->name), addr)) {
+			eprintf("Failed to create match\n");
+		}
+		ctx->count++;
+		return true;
+	}
+	if (!fill_deps) {
+		return false;
+	}
+	/* Candidate has no xrefs. Lets try to confirm it via callers */
+	if (!it->refs) {
+		RzSignItem *caller;
+		RzList *deps = ht_pp_find(ctx->dependencies, clean_name(it->name), NULL);
+		rz_list_foreach (deps, iter, caller) {
+			RzVector *cands = ht_pp_find(ctx->candidates, clean_name(caller->name), NULL);
+			if (!cands) {
+				continue;
+			}
+			ut64 *cand_off;
+			rz_vector_foreach(cands, cand_off) {
+				
+			}
+		}
+	}
+	if (!cand_vec) {
+		cand_vec = rz_vector_new(sizeof(ut64), NULL, NULL);
+		ht_pp_insert(ctx->candidates, clean_name(it->name), cand_vec);
+	}
+	rz_vector_push(cand_vec, &addr);
+	return false;
+}
+
+static int searchHitCB2(RzSignItem *it, RzSearchKeyword *kw, ut64 addr, void *user) {
+	struct ctxSearchCB *ctx = (struct ctxSearchCB *)user;
+	//apply_flag (ctx->core, it, addr, kw->keyword_length, kw->count, ctx->prefix, ctx->rad);
+	RzAnalysisFunction *fcn = rz_analysis_get_fcn_in(ctx->core->analysis, addr, 0);
+	eprintf("\nPotential function %s\n", it->name);
+	if (fcn) {
+		if (fcn->addr == addr) {
+			eprintf("Function starts from %08llx [OK]\n", addr);
+		} else {
+			eprintf("Function starts not from %08llx\n", addr);
+		}
+		RzListIter *iter, *iter2;
+		RzSignInnerXref *ir;
+		rz_list_foreach (it->inner_refs, iter, ir) {
+			RzList *irefs = rz_analysis_refs_get(ctx->core->analysis, addr + ir->src_offset);
+			bool found = false;
+			ut64 dst = addr + ir->dst_offset;
+			RzAnalysisRef *ref;
+			rz_list_foreach (irefs, iter2, ref) {
+				if (ref->addr == dst) {
+					found = true;
+					break;
+				} else {
+					eprintf("Real iref from %08llx to %08llx (sign refs to %08llx)\n", ref->at, ref->at, dst);
+				}
+			}
+			if (rz_list_empty(irefs)) {
+				eprintf("No refs at %08llx!\n", addr + ir->src_offset);
+			}
+			rz_list_free(irefs);
+			if (!found) {
+				eprintf("Inner refs mismatch\n");
+				return 1;
+			}
+		}
+		if (check_match(it, addr, ctx, true)) {
+			if (DBG_ZIGN) eprintf("YAY!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+			RzList *queue = rz_list_new();
+			rz_list_append(queue, it);
+			RzSignItem *q_it, *q_it2;
+			rz_list_foreach(queue, iter, q_it) {
+				RzList *deps = ht_pp_find(ctx->dependencies, clean_name(q_it->name), NULL);
+				eprintf("%s has %d callers\n", q_it->name, rz_list_length(deps));
+				rz_list_foreach(deps, iter2, q_it2) {
+					RzVector *cands = ht_pp_find(ctx->candidates, clean_name(q_it2->name), NULL);
+					if (!cands) {
+						continue;
+					}
+					ut64 *cand_off;
+					rz_vector_foreach(cands, cand_off) {
+						if (DBG_ZIGN) eprintf(">>>>>>> Proccessing cand %08x of %s\n", *cand_off, q_it2->name);
+						if (check_match(q_it2, *cand_off, ctx, false)) {
+							/* Check callers of the newly found sign */
+							rz_list_append(queue, q_it2);
+							break;
+						}
+					}
+				}
+			}
+		}
+	} else {
+		eprintf("No function at %08llx\n", addr);
+	}
 	return 1;
 }
 
@@ -795,6 +973,30 @@ static bool fill_search_metrics(RzSignSearchMetrics *sm, RzCore *c, void *user) 
 	return (i > 0);
 }
 
+static void cand_free(HtPPKv *kv) {
+	rz_vector_free(kv->value);
+}
+
+static void dep_free(HtPPKv *kv) {
+	rz_list_free(kv->value);
+}
+
+static void orphan_free(HtUPKv *kv) {
+	rz_pvector_free(kv->value);
+}
+
+bool listDepsCb(void *user, const void *k, const void *v) {
+	eprintf("Callee %s has %d callers\n", k, rz_list_length(v));
+	return true;
+}
+
+bool listMatches(void *user, const void *k, ut64 v) {
+	int *n = user;
+	*n = *n + 1;
+	eprintf("Hit %d: %s\n", *n, k);
+	return true;
+}
+
 static bool search(RzCore *core, bool rad, bool only_func) {
 	RzList *list;
 	RzListIter *iter;
@@ -839,29 +1041,34 @@ static bool search(RzCore *core, bool rad, bool only_func) {
 	if (metsearch) {
 		eprintf("[+] searching function metrics\n");
 		rz_cons_break_push(NULL, NULL);
-		int count = 0;
-
+		
 		RzSignSearch *ss = NULL;
 
 		if (useBytes && only_func) {
 			ss = rz_sign_search_new();
 			ss->search->align = rz_config_get_i(core->config, "search.align");
 			int minsz = rz_config_get_i(core->config, "zign.minsz");
-			rz_sign_search_init(core->analysis, ss, minsz, searchHitCB, &bytes_search_ctx);
+			rz_sign_search_init(core->analysis, ss, minsz, searchHitCB2, &bytes_search_ctx);
+			bytes_search_ctx.candidates = ht_pp_new(NULL, cand_free, NULL);
+			bytes_search_ctx.dependencies = ht_pp_new(NULL, dep_free, NULL);
+			bytes_search_ctx.matches = ht_pu_new0();
+			bytes_search_ctx.orphans = ht_up_new(NULL, orphan_free, NULL);
 		}
 
+		int count = 1;
+		int total = rz_list_length (core->analysis->fcns);
 		rz_list_foreach (core->analysis->fcns, iter, fcni) {
 			if (rz_cons_is_breaked()) {
 				break;
 			}
 			if (useBytes && only_func) {
-				eprintf("Matching func %d / %d (hits %d)\n", count, rz_list_length(core->analysis->fcns), bytes_search_ctx.count);
+				eprintf ("Matching func %d / %d (hits %d)\n", count, total, bytes_search_ctx.count);
 				int fcnlen = rz_analysis_function_realsize(fcni);
-				int len = RZ_MIN(core->io->addrbytes * fcnlen, maxsz);
+				int len = RZ_MIN (core->io->addrbytes * fcnlen, maxsz);
 				retval &= searchRange2(core, ss, fcni->addr, fcni->addr + len, rad, &bytes_search_ctx);
 			}
 			sm.fcn = fcni;
-			hits += rz_sign_fcn_match_metrics(&sm);
+			//hits += rz_sign_fcn_match_metrics (&sm);
 			sm.fcn = NULL;
 			count++;
 			// TODO: add useXRefs, useName
@@ -881,6 +1088,9 @@ static bool search(RzCore *core, bool rad, bool only_func) {
 
 	hits += bytes_search_ctx.count;
 	eprintf("hits: %d\n", hits);
+	int n = 0;
+	ht_pu_foreach(bytes_search_ctx.matches, listMatches, &n);
+	ht_pp_foreach(bytes_search_ctx.dependencies, listDepsCb, NULL);
 
 	return retval;
 }
@@ -1251,9 +1461,6 @@ RZ_IPI int rz_cmd_zign(void *data, const char *input) {
 	case 'q':
 	case 'j': // "zj"
 		rz_sign_list(core->analysis, *input);
-		break;
-	case 'k': // "zk"
-		rz_core_kuery_print(core, "analysis/zigns/*");
 		break;
 	case '-': // "z-"
 		rz_sign_delete(core->analysis, arg);

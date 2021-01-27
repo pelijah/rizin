@@ -66,6 +66,8 @@ static void zign_rename_for(RzEvent *ev, int type, void *user, void *data) {
 void rz_analysis_hint_storage_init(RzAnalysis *a);
 void rz_analysis_hint_storage_fini(RzAnalysis *a);
 
+RZ_IPI void rz_analysis_zigns_storage_init(RzAnalysis *a);
+
 static void rz_meta_item_fini(RzAnalysisMetaItem *item) {
 	free(item->str);
 }
@@ -114,6 +116,7 @@ RZ_API RzAnalysis *rz_analysis_new(void) {
 	analysis->sdb_fmts = sdb_ns(analysis->sdb, "spec", 1);
 	analysis->sdb_cc = sdb_ns(analysis->sdb, "cc", 1);
 	analysis->sdb_zigns = sdb_ns(analysis->sdb, "zigns", 1);
+	rz_analysis_zigns_storage_init(analysis);
 	analysis->sdb_classes = sdb_ns(analysis->sdb, "classes", 1);
 	analysis->sdb_classes_attrs = sdb_ns(analysis->sdb_classes, "attrs", 1);
 	analysis->sdb_noret = sdb_ns(analysis->sdb, "noreturn", 1);
@@ -163,6 +166,7 @@ RZ_API RzAnalysis *rz_analysis_free(RzAnalysis *a) {
 	rz_list_free(a->fcns);
 	ht_up_free(a->ht_addr_fun);
 	ht_pp_free(a->ht_name_fun);
+	ht_pp_free (a->zigns_ht);
 	set_u_free(a->visited);
 	rz_analysis_hint_storage_fini(a);
 	rz_interval_tree_fini(&a->meta);

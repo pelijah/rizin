@@ -575,6 +575,7 @@ typedef struct rz_analysis_t {
 	RzList *fcns;
 	HtUP *ht_addr_fun; // address => function
 	HtPP *ht_name_fun; // name => function
+	HtPP *zigns_ht;
 	RzReg *reg;
 	ut8 *last_disasm_reg;
 	RzSyscall *syscall;
